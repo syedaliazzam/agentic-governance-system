@@ -1,0 +1,218 @@
+# ============================================================================
+# AgentCore Registry — Backend CI/CD Pipeline
+# ============================================================================
+# Deploys three Lambda functions to AWS eu-central-1.
+# Registry stays in eu-west-1; Lambda functions live in eu-central-1.
+#
+# Required GitLab CI/CD variables (Settings → CI/CD → Variables):
+#   AWS_ACCESS_KEY_ID      — IAM access key with Lambda deploy permissions
+#   AWS_SECRET_ACCESS_KEY  — IAM secret key
+#   AWS_DEFAULT_REGION     — eu-central-1
+#   REGISTRY_ID            — Oa1hXgCtdOnJp6GM
+#   BOTO3_LAYER_ARN        — arn:aws:lambda:eu-central-1:978502151212:layer:boto3-latest:1
+#   LAMBDA_ROLE_ARN        — arn:aws:iam::978502151212:role/agentcore-registry-migration-role
+#   CATALOG_ROLE_ARN       — arn:aws:iam::978502151212:role/agentcore-mock-api-role
+# ============================================================================
+
+stages:
+  - lint
+  - package
+  - deploy
+
+variables:
+  PYTHON_VERSION: "3.12"
+
+# ── Lint ─────────────────────────────────────────────────────────────────────
+
+lint:
+  stage: lint
+  image: python:3.12-slim
+  script:
+    - pip install pyflakes --quiet
+    - pyflakes lambdas/agentcore-registry-ingestion/lambda_function.py
+    - pyflakes lambdas/agentcore-gateway-ingestion/lambda_function.py
+    - pyflakes lambdas/agentcore-catalog-api/lambda_function.py
+    - echo "Lint passed"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ── Package ───────────────────────────────────────────────────────────────────
+
+.package_template: &package_template
+  stage: package
+  image: python:3.12-slim
+  script:
+    - cd lambdas/${LAMBDA_NAME}
+    - zip -j ${LAMBDA_NAME}.zip lambda_function.py
+    - echo "Packaged ${LAMBDA_NAME}.zip ($(wc -c < ${LAMBDA_NAME}.zip) bytes)"
+  artifacts:
+    paths:
+      - lambdas/${LAMBDA_NAME}/${LAMBDA_NAME}.zip
+    expire_in: 1 hour
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+package:registry-ingestion:
+  <<: *package_template
+  variables:
+    LAMBDA_NAME: agentcore-registry-ingestion
+
+package:gateway-ingestion:
+  <<: *package_template
+  variables:
+    LAMBDA_NAME: agentcore-gateway-ingestion
+
+package:catalog-api:
+  <<: *package_template
+  variables:
+    LAMBDA_NAME: agentcore-catalog-api
+
+# ── Deploy ────────────────────────────────────────────────────────────────────
+
+.deploy_template: &deploy_template
+  stage: deploy
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  environment:
+    name: dev
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy:registry-ingestion:
+  <<: *deploy_template
+  needs:
+    - package:registry-ingestion
+  script:
+    - LAMBDA_NAME=agentcore-registry-ingestion
+    - ZIP_PATH=lambdas/${LAMBDA_NAME}/${LAMBDA_NAME}.zip
+    - echo "Deploying ${LAMBDA_NAME}..."
+
+    # Create or update function
+    - |
+      if aws lambda get-function --function-name ${LAMBDA_NAME} --region ${AWS_DEFAULT_REGION} 2>/dev/null; then
+        echo "Updating existing function..."
+        aws lambda update-function-code \
+          --function-name ${LAMBDA_NAME} \
+          --zip-file fileb://${ZIP_PATH} \
+          --region ${AWS_DEFAULT_REGION}
+        aws lambda wait function-updated \
+          --function-name ${LAMBDA_NAME} \
+          --region ${AWS_DEFAULT_REGION}
+        aws lambda update-function-configuration \
+          --function-name ${LAMBDA_NAME} \
+          --timeout 300 \
+          --memory-size 256 \
+          --layers ${BOTO3_LAYER_ARN} \
+          --environment "Variables={REGISTRY_ID=${REGISTRY_ID}}" \
+          --region ${AWS_DEFAULT_REGION}
+      else
+        echo "Creating new function..."
+        aws lambda create-function \
+          --function-name ${LAMBDA_NAME} \
+          --runtime python3.12 \
+          --role ${LAMBDA_ROLE_ARN} \
+          --handler lambda_function.lambda_handler \
+          --zip-file fileb://${ZIP_PATH} \
+          --timeout 300 \
+          --memory-size 256 \
+          --layers ${BOTO3_LAYER_ARN} \
+          --environment "Variables={REGISTRY_ID=${REGISTRY_ID}}" \
+          --description "Ingests AgentCore A2A/AGUI runtimes into registry" \
+          --region ${AWS_DEFAULT_REGION} \
+          --tags Project=syngenta-agentcore-poc,ManagedBy=gitlab
+      fi
+
+    - echo "Deploy complete — ${LAMBDA_NAME}"
+
+deploy:gateway-ingestion:
+  <<: *deploy_template
+  needs:
+    - package:gateway-ingestion
+  script:
+    - LAMBDA_NAME=agentcore-gateway-ingestion
+    - ZIP_PATH=lambdas/${LAMBDA_NAME}/${LAMBDA_NAME}.zip
+    - echo "Deploying ${LAMBDA_NAME}..."
+
+    - |
+      if aws lambda get-function --function-name ${LAMBDA_NAME} --region ${AWS_DEFAULT_REGION} 2>/dev/null; then
+        echo "Updating existing function..."
+        aws lambda update-function-code \
+          --function-name ${LAMBDA_NAME} \
+          --zip-file fileb://${ZIP_PATH} \
+          --region ${AWS_DEFAULT_REGION}
+        aws lambda wait function-updated \
+          --function-name ${LAMBDA_NAME} \
+          --region ${AWS_DEFAULT_REGION}
+        aws lambda update-function-configuration \
+          --function-name ${LAMBDA_NAME} \
+          --timeout 120 \
+          --memory-size 256 \
+          --layers ${BOTO3_LAYER_ARN} \
+          --environment "Variables={REGISTRY_ID=${REGISTRY_ID}}" \
+          --region ${AWS_DEFAULT_REGION}
+      else
+        echo "Creating new function..."
+        aws lambda create-function \
+          --function-name ${LAMBDA_NAME} \
+          --runtime python3.12 \
+          --role ${LAMBDA_ROLE_ARN} \
+          --handler lambda_function.lambda_handler \
+          --zip-file fileb://${ZIP_PATH} \
+          --timeout 120 \
+          --memory-size 256 \
+          --layers ${BOTO3_LAYER_ARN} \
+          --environment "Variables={REGISTRY_ID=${REGISTRY_ID}}" \
+          --description "Ingests AgentCore MCP gateways into registry" \
+          --region ${AWS_DEFAULT_REGION} \
+          --tags Project=syngenta-agentcore-poc,ManagedBy=gitlab
+      fi
+
+    - echo "Deploy complete — ${LAMBDA_NAME}"
+
+deploy:catalog-api:
+  <<: *deploy_template
+  needs:
+    - package:catalog-api
+  script:
+    - LAMBDA_NAME=agentcore-catalog-api
+    - ZIP_PATH=lambdas/${LAMBDA_NAME}/${LAMBDA_NAME}.zip
+    - echo "Deploying ${LAMBDA_NAME}..."
+
+    - |
+      if aws lambda get-function --function-name ${LAMBDA_NAME} --region ${AWS_DEFAULT_REGION} 2>/dev/null; then
+        echo "Updating existing function..."
+        aws lambda update-function-code \
+          --function-name ${LAMBDA_NAME} \
+          --zip-file fileb://${ZIP_PATH} \
+          --region ${AWS_DEFAULT_REGION}
+        aws lambda wait function-updated \
+          --function-name ${LAMBDA_NAME} \
+          --region ${AWS_DEFAULT_REGION}
+        aws lambda update-function-configuration \
+          --function-name ${LAMBDA_NAME} \
+          --timeout 30 \
+          --memory-size 256 \
+          --layers ${BOTO3_LAYER_ARN} \
+          --environment "Variables={REGISTRY_ID=${REGISTRY_ID}}" \
+          --region ${AWS_DEFAULT_REGION}
+      else
+        echo "Creating new function..."
+        aws lambda create-function \
+          --function-name ${LAMBDA_NAME} \
+          --runtime python3.12 \
+          --role ${CATALOG_ROLE_ARN} \
+          --handler lambda_function.handler \
+          --zip-file fileb://${ZIP_PATH} \
+          --timeout 30 \
+          --memory-size 256 \
+          --layers ${BOTO3_LAYER_ARN} \
+          --environment "Variables={REGISTRY_ID=${REGISTRY_ID}}" \
+          --description "AgentCore Catalog and Governance API" \
+          --region ${AWS_DEFAULT_REGION} \
+          --tags Project=syngenta-agentcore-poc,ManagedBy=gitlab
+      fi
+
+    - echo "Deploy complete — ${LAMBDA_NAME}"
