@@ -16,7 +16,7 @@ import time
 control  = boto3.client("bedrock-agentcore-control", region_name="eu-central-1")
 registry = boto3.client("bedrock-agentcore-control", region_name="eu-west-1")
 
-REGISTRY_ID = os.environ.get("REGISTRY_ID", "Oa1hXgCtdOnJp6GM")
+REGISTRY_ID = os.environ.get("REGISTRY_ID")
 
 
 def get_all_gateways():

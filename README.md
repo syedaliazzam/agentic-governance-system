@@ -1,45 +1,112 @@
-# AI Foundry Registry Backend
+# AgentCore Registry — Backend
 
-Backend API for the AI Foundry Registry platform. Contains Lambda function source code (Node.js 20.x) that is bundled with esbuild and deployed to AWS Lambda.
+Lambda functions and CI/CD pipeline for the Syngenta AI Foundry AgentCore Registry.
 
-## Project Structure
+## Repository Structure
 
 ```
-ai-foundry-registry-backend/
-├── src/
-│   └── functions/
-│       └── api/
-│           └── index.mjs    # API Lambda handler
-├── dist/                    # esbuild output (gitignored)
-├── scripts/
-│   ├── build.sh             # Bundles Lambda function(s) with esbuild, then zips
-│   └── deploy.sh            # Uploads zip(s) to S3 + updates Lambda function(s)
-├── package.json
-└── README.md
+backend/
+├── .gitlab-ci.yml                          # CI/CD pipeline
+├── README.md
+└── lambdas/
+    ├── agentcore-registry-ingestion/       # Ingest A2A + AGUI agents
+    │   ├── lambda_function.py
+    │   └── requirements.txt
+    ├── agentcore-gateway-ingestion/        # Ingest MCP gateways
+    │   ├── lambda_function.py
+    │   └── requirements.txt
+    └── agentcore-catalog-api/              # Catalog + governance API
+        ├── lambda_function.py
+        └── requirements.txt
 ```
 
-## Prerequisites
+## Lambda Functions
 
-- Node.js 20.x
-- AWS CLI configured with appropriate credentials
-- `zip` utility available on PATH
+### agentcore-registry-ingestion
+Scans all AgentCore Runtimes in `eu-central-1`, filters to A2A and AGUI protocol agents, and ingests them into the AgentCore Registry in `eu-west-1`.
 
-## Scripts
+- **Invocation:** async (`InvocationType=Event`) — takes ~40s
+- **Timeout:** 300s | **Memory:** 256 MB
+- **IAM Role:** `agentcore-registry-migration-role`
 
-### `scripts/build.sh [function-name]`
+```bash
+aws lambda invoke \
+  --function-name agentcore-registry-ingestion \
+  --invocation-type Event \
+  --region eu-central-1 \
+  /tmp/response.json
 
-Bundles Lambda function(s) with esbuild and produces zip artifacts. Runs `npm ci` to install dependencies, then uses esbuild to bundle each function into a self-contained ESM file with tree-shaking and AWS SDK externalized. The bundled output is zipped for deployment.
+# Tail logs after ~50s
+aws logs tail /aws/lambda/agentcore-registry-ingestion \
+  --region eu-central-1 --since 5m
+```
 
-- If `function-name` is provided, builds only that function (e.g., `scripts/build.sh api`).
-- If omitted, builds all functions discovered under `src/functions/`.
-- No environment argument required.
-- Produces `<function-name>.zip` in the project root for each built function.
+### agentcore-gateway-ingestion
+Scans all AgentCore Gateways in `eu-central-1` and ingests them into the registry. Tries MCP descriptor first; falls back to CUSTOM for JWT-protected gateways.
 
-### `scripts/deploy.sh <environment> [function-name]`
+- **Invocation:** sync (`InvocationType=RequestResponse`) — takes ~10s
+- **Timeout:** 120s | **Memory:** 256 MB
+- **IAM Role:** `agentcore-registry-migration-role`
 
-Uploads zip artifact(s) to the S3 Lambda Zip Bucket and updates Lambda function code in the target environment.
+```bash
+aws lambda invoke \
+  --function-name agentcore-gateway-ingestion \
+  --invocation-type RequestResponse \
+  --region eu-central-1 \
+  --payload '{}' \
+  /tmp/response.json && cat /tmp/response.json
+```
 
-- `environment` (required): Target deployment environment. Must be one of `dev`, `test`, `stage`, or `prod`.
-- `function-name` (optional): If provided, deploys only that function. If omitted, deploys all functions.
-- Requires the corresponding zip artifact to exist (run `scripts/build.sh` first).
-- Requires AWS CLI configured with permissions to write to S3 and update Lambda functions.
+### agentcore-catalog-api
+Catalog and governance API for the frontend UI. Reads live data from the registry and exposes it via API Gateway (`nhrfwhwue4`, `eu-central-1`).
+
+- **Base URL:** `https://nhrfwhwue4.execute-api.eu-central-1.amazonaws.com/dev`
+- **Timeout:** 30s | **Memory:** 256 MB
+- **IAM Role:** `agentcore-mock-api-role`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/records` | List all records (`?status=` `?type=` `?protocol=` `?search=`) |
+| GET | `/records/{id}` | Single record with full metadata |
+| PUT | `/records/{id}` | Update description / tags (DRAFT only) |
+| POST | `/records/{id}/submit` | DRAFT → PENDING_APPROVAL |
+| PUT | `/records/{id}/status` | APPROVED / REJECTED / DEPRECATED |
+
+## CI/CD Pipeline
+
+The pipeline runs on every merge request and every push to `main`.
+
+| Stage | Job | Trigger |
+|-------|-----|---------|
+| lint | Pyflakes all 3 Lambda files | MR + main |
+| package | Zip each Lambda | MR + main |
+| deploy | Deploy to AWS via `aws-cli` | main only |
+
+### Required GitLab CI/CD Variables
+
+Set these under **Settings → CI/CD → Variables**:
+
+| Variable | Value |
+|----------|-------|
+| `AWS_ACCESS_KEY_ID` | IAM access key |
+| `AWS_SECRET_ACCESS_KEY` | IAM secret key |
+| `AWS_DEFAULT_REGION` | `eu-central-1` |
+| `REGISTRY_ID` | `Oa1hXgCtdOnJp6GM` |
+| `BOTO3_LAYER_ARN` | `arn:aws:lambda:eu-central-1:978502151212:layer:boto3-latest:1` |
+| `LAMBDA_ROLE_ARN` | `arn:aws:iam::978502151212:role/agentcore-registry-migration-role` |
+| `CATALOG_ROLE_ARN` | `arn:aws:iam::978502151212:role/agentcore-mock-api-role` |
+
+### Branch Protection
+
+- `main` branch is protected — no direct pushes
+- All changes go through a merge request
+- Pipeline must pass before merge
+
+## Registry
+
+| Property | Value |
+|----------|-------|
+| Registry ID | `Oa1hXgCtdOnJp6GM` |
+| Region | `eu-west-1` |
+| Account | `978502151212` |
+| Records | 26 (16 agents + 10 gateways) |

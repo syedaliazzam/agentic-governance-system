@@ -19,7 +19,7 @@ import os
 import time
 
 registry    = boto3.client("bedrock-agentcore-control", region_name="eu-west-1")
-REGISTRY_ID = os.environ.get("REGISTRY_ID", "Oa1hXgCtdOnJp6GM")
+REGISTRY_ID = os.environ.get("REGISTRY_ID")
 CORS        = {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
 
 
