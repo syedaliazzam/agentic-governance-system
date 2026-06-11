@@ -219,7 +219,9 @@ def handler(event, context):
                     records.append(normalize(d))
 
             if params.get("status"):
-                records = [r for r in records if r["status"] == params["status"]]
+                # Support comma-separated values e.g. ?status=DRAFT,REJECTED
+                statuses = [s.strip() for s in params["status"].split(",")]
+                records  = [r for r in records if r["status"] in statuses]
             if params.get("type"):
                 records = [r for r in records if r["descriptorType"] == params["type"]]
             if params.get("protocol"):
