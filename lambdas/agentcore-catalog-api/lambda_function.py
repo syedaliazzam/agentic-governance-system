@@ -223,7 +223,9 @@ def handler(event, context):
                 statuses = [s.strip() for s in params["status"].split(",")]
                 records  = [r for r in records if r["status"] in statuses]
             if params.get("type"):
-                records = [r for r in records if r["descriptorType"] == params["type"]]
+                # Support comma-separated values e.g. ?type=A2A,CUSTOM
+                types   = [t.strip() for t in params["type"].split(",")]
+                records = [r for r in records if r["descriptorType"] in types]
             if params.get("protocol"):
                 p = params["protocol"].upper()
                 records = [r for r in records
