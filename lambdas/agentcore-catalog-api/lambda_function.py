@@ -78,6 +78,7 @@ def normalize(d):
                 "skills":       content.get("skills", []),
                 "url":          content.get("url", ""),
                 "tags":         content.get("tags", {}),
+                "additionalMetadata": content.get("additionalMetadata", []),
             }
 
         elif dtype == "MCP":
@@ -93,6 +94,7 @@ def normalize(d):
                 "serverName": content.get("name", ""),
                 "version":    content.get("version", ""),
                 "tags":       content.get("tags", {}),
+                "additionalMetadata": content.get("additionalMetadata", []),
             }
 
         elif dtype == "CUSTOM":
@@ -105,6 +107,7 @@ def normalize(d):
                 "authType":    content.get("authType", "N/A"),
                 "networkMode": content.get("networkMode", ""),
                 "tags":        content.get("tags", {}),
+                "additionalMetadata": content.get("additionalMetadata", []),
             }
             # Agent fields
             for k in ("agentRuntimeArn", "version", "model", "serviceName",
@@ -134,19 +137,19 @@ def normalize(d):
     }
 
 
-def build_descriptors(d, new_desc=None, new_tags=None):
+def build_descriptors(d, new_desc=None, new_tags=None, new_additional_metadata=None):
     """
     Build the descriptors update payload. description and tags are both
     injected into inlineContent — the registry API does not accept
     description as a top-level string on update.
     """
     dtype = d["descriptorType"]
-
     def patch(content):
-        if new_desc is not None:
-            content["description"] = new_desc
-        if new_tags is not None:
-            content["tags"] = new_tags
+        if new_desc is not None: content["description"] = new_desc
+        if new_tags is not None: content["tags"]        = new_tags
+        if new_additional_metadata is not None:
+            # Stored as its own field, separate from the fixed tags schema
+            content["additionalMetadata"] = new_additional_metadata
         return content
 
     if dtype == "CUSTOM":
@@ -271,11 +274,11 @@ def handler(event, context):
 
         new_desc = body.get("description")
         new_tags = body.get("tags")
-        if new_desc is None and new_tags is None:
-            return err(400, "Provide at least one of: description, tags")
-
+        new_additional_metadata = body.get("additionalMetadata")
+        if new_desc is None and new_tags is None and not new_additional_metadata:
+            return err(400, "Provide at least one of: description, tags, additionalMetadata")
         try:
-            descriptors = build_descriptors(d, new_desc=new_desc, new_tags=new_tags)
+            descriptors = build_descriptors(d, new_desc=new_desc, new_tags=new_tags, new_additional_metadata=new_additional_metadata)
             registry.update_registry_record(
                 registryId=REGISTRY_ID,
                 recordId=record_id,
