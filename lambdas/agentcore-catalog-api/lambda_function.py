@@ -184,8 +184,13 @@ def build_descriptors(d, new_desc=None, new_tags=None):
 # ── handler ───────────────────────────────────────────────────────────────────
 
 def handler(event, context):
-    path   = event.get("path", "/")
-    method = event.get("httpMethod", "GET")
+    # Support both HTTP API payload format 2.0 (rawPath / requestContext.http.method)
+    # and REST API / format 1.0 (path / httpMethod)
+    path = event.get("rawPath") or event.get("path", "/")
+    method = (
+        event.get("requestContext", {}).get("http", {}).get("method")
+        or event.get("httpMethod", "GET")
+    )
     params = event.get("queryStringParameters") or {}
     body   = {}
 
@@ -195,7 +200,14 @@ def handler(event, context):
         except Exception:
             return err(400, "Invalid JSON body")
 
-    parts     = [p for p in path.strip("/").split("/") if p]
+    parts = [p for p in path.strip("/").split("/") if p]
+
+    # Named API Gateway stages (e.g. "api") show up as the first path
+    # segment in rawPath for HTTP APIs. Strip it so routes match either way.
+    if parts and parts[0] == "api":
+        parts = parts[1:]
+
+    path      = "/" + "/".join(parts)
     record_id = parts[1] if len(parts) >= 2 else None
 
     print("REQUEST: " + method + " " + path)
