@@ -86,7 +86,7 @@ functions:
           path: /ingest/gateways
           method: POST
   authorizer:
-    name: agentcore-cognito-authorizer
+    name: ai-foundry-registry-${opt:stage, 'dev'}-authorizer-lambda
     handler: lambdas/authorizer/lambda_function.handler
     timeout: 10
     memorySize: 256
