@@ -1,31 +1,79 @@
-# ============================================================================
-# AgentCore Registry — Backend CI/CD Pipeline
-# ============================================================================
-# Deploys three Lambda functions to AWS eu-central-1.
-# Registry stays in eu-west-1; Lambda functions live in eu-central-1.
-#
-# Required GitLab CI/CD variables (Settings → CI/CD → Variables):
-#   AWS_ACCESS_KEY_ID      — IAM access key with Lambda deploy permissions
-#   AWS_SECRET_ACCESS_KEY  — IAM secret key
-#   AWS_DEFAULT_REGION     — eu-central-1
-#   REGISTRY_ID            — Oa1hXgCtdOnJp6GM
-#   BOTO3_LAYER_ARN        — arn:aws:lambda:eu-central-1:978502151212:layer:boto3-latest:1
-#   LAMBDA_ROLE_ARN        — arn:aws:iam::978502151212:role/agentcore-registry-migration-role
-#   CATALOG_ROLE_ARN       — arn:aws:iam::978502151212:role/agentcore-mock-api-role
-# ============================================================================
+workflow:
+  rules:
+    - if: "$CI_COMMIT_TAG"
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/.+$/'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 
-stages:
-  - lint
-  - package
-  - deploy
+image: node:20-slim
 
 variables:
-  PYTHON_VERSION: "3.12"
+  AWS_REGION: "eu-central-1"
+  AWS_DEFAULT_REGION: "eu-central-1"
+  GIT_DEPTH: "0"
+  AWS_ROLE_ARN_DEV: "arn:aws:iam::978502151212:role/GalaxyAI-TerraformRole"
+  AWS_ROLE_ARN_PROD: ""
 
-# ── Lint ─────────────────────────────────────────────────────────────────────
+stages:
+  - validate
+  - deploy
 
-lint:
-  stage: lint
+# ── OIDC AWS + Serverless helper (Frank's) ────────────────────────────────────
+
+.install_aws_cli_serverless:
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+  before_script:
+    - apt-get update && apt-get install -y curl unzip
+    - curl -L "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "aws-cli.zip"
+    - unzip aws-cli.zip && ./aws/install
+    - npm install -g serverless@3 && serverless --version
+    - >
+      export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s"
+      $(aws sts assume-role-with-web-identity
+      --role-arn ${AWS_ROLE_ARN}
+      --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+      --web-identity-token ${GITLAB_OIDC_TOKEN}
+      --duration-seconds 3600
+      --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'
+      --output text))
+    - aws sts get-caller-identity
+
+# ── OIDC AWS helper for Python Lambda deploys ─────────────────────────────────
+
+.install_aws_cli_python:
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+  before_script:
+    - apt-get update && apt-get install -y curl unzip python3 python3-pip zip --quiet
+    - curl -L "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "aws-cli.zip"
+    - unzip -q aws-cli.zip && ./aws/install
+    - >
+      export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s"
+      $(aws sts assume-role-with-web-identity
+      --role-arn ${AWS_ROLE_ARN}
+      --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+      --web-identity-token ${GITLAB_OIDC_TOKEN}
+      --duration-seconds 3600
+      --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'
+      --output text))
+    - aws sts get-caller-identity
+
+# ── Validate (Frank's — unit tests placeholder) ───────────────────────────────
+
+validate:
+  stage: validate
+  script:
+    - echo "Validation passed — add unit tests here"
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/.+$/'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+# ── Python Lambda lint (runs in validate stage alongside unit tests) ──────────
+
+lint:python-lambdas:
+  stage: validate
   image: python:3.12-slim
   script:
     - pip install pyflakes --quiet
@@ -33,68 +81,73 @@ lint:
     - pyflakes lambdas/agentcore-gateway-ingestion/lambda_function.py
     - pyflakes lambdas/agentcore-catalog-api/lambda_function.py
     - pyflakes lambdas/authorizer/lambda_function.py
-    - echo "Lint passed"
+    - echo "Lambda lint passed"
   rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/.+$/'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
 
-# ── Package ───────────────────────────────────────────────────────────────────
+# ── Serverless deploy (Frank's) ───────────────────────────────────────────────
 
-.package_template: &package_template
-  stage: package
-  image: python:3.12-slim
-  script:
-    - cd lambdas/${LAMBDA_NAME}
-    - zip -j ${LAMBDA_NAME}.zip lambda_function.py
-    - echo "Packaged ${LAMBDA_NAME}.zip ($(wc -c < ${LAMBDA_NAME}.zip) bytes)"
-  artifacts:
-    paths:
-      - lambdas/${LAMBDA_NAME}/${LAMBDA_NAME}.zip
-    expire_in: 1 hour
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-
-package:registry-ingestion:
-  <<: *package_template
-  variables:
-    LAMBDA_NAME: agentcore-registry-ingestion
-
-package:gateway-ingestion:
-  <<: *package_template
-  variables:
-    LAMBDA_NAME: agentcore-gateway-ingestion
-
-package:catalog-api:
-  <<: *package_template
-  variables:
-    LAMBDA_NAME: agentcore-catalog-api
-
-# ── Deploy ────────────────────────────────────────────────────────────────────
-
-.deploy_template: &deploy_template
+.deploy_template:
+  extends: .install_aws_cli_serverless
   stage: deploy
-  image:
-    name: amazon/aws-cli:latest
-    entrypoint: [""]
+  script:
+    - STACK_NAME="AI-Foundry-Registry-${CI_ENVIRONMENT_NAME}"
+    - STATUS=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].StackStatus" --output text || echo "NOT_FOUND")
+    - >
+      if [ "$STATUS" = "ROLLBACK_COMPLETE" ]; then
+        echo "Stack in ROLLBACK_COMPLETE state. Deleting..."
+        aws cloudformation delete-stack --stack-name $STACK_NAME
+        echo "Waiting for stack deletion..."
+        aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME
+      fi
+    - echo "Packaging and deploying to AWS..."
+    - set -a && source .env.${CI_ENVIRONMENT_NAME} && set +a
+    - serverless deploy --stage $CI_ENVIRONMENT_NAME
+
+deploy_dev:
+  extends: .deploy_template
   environment:
     name: dev
+  variables:
+    AWS_ROLE_ARN: $AWS_ROLE_ARN_DEV
   rules:
+    - if: '$CI_COMMIT_TAG =~ /^dev\/v.+$/'
+      when: manual
+
+deploy_prod:
+  extends: .deploy_template
+  environment:
+    name: prod
+  variables:
+    AWS_ROLE_ARN: $AWS_ROLE_ARN_PROD
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^release\/v.+$/'
+      when: manual
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+# ── Python Lambda deploys via AWS CLI ─────────────────────────────────────────
+# Triggered on dev-v* tags (e.g. git tag -a dev-v0.1.0 ...).
+# Uses OIDC auth same as Frank's serverless jobs.
+
+.lambda_deploy_template:
+  extends: .install_aws_cli_python
+  stage: deploy
+  variables:
+    AWS_ROLE_ARN: $AWS_ROLE_ARN_DEV
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^dev-v.+$/'
+
 deploy:registry-ingestion:
-  <<: *deploy_template
-  needs:
-    - package:registry-ingestion
+  extends: .lambda_deploy_template
   script:
     - LAMBDA_NAME=agentcore-registry-ingestion
-    - ZIP_PATH=lambdas/${LAMBDA_NAME}/${LAMBDA_NAME}.zip
+    - ZIP_PATH=/tmp/${LAMBDA_NAME}.zip
+    - cd lambdas/${LAMBDA_NAME} && zip -j ${ZIP_PATH} lambda_function.py && cd -
     - echo "Deploying ${LAMBDA_NAME}..."
-
-    # Create or update function
     - |
       if aws lambda get-function --function-name ${LAMBDA_NAME} --region ${AWS_DEFAULT_REGION} 2>/dev/null; then
-        echo "Updating existing function..."
         aws lambda update-function-code \
           --function-name ${LAMBDA_NAME} \
           --zip-file fileb://${ZIP_PATH} \
@@ -110,7 +163,6 @@ deploy:registry-ingestion:
           --environment "Variables={REGISTRY_ID=${REGISTRY_ID}}" \
           --region ${AWS_DEFAULT_REGION}
       else
-        echo "Creating new function..."
         aws lambda create-function \
           --function-name ${LAMBDA_NAME} \
           --runtime python3.12 \
@@ -125,21 +177,17 @@ deploy:registry-ingestion:
           --region ${AWS_DEFAULT_REGION} \
           --tags Project=syngenta-agentcore-poc,ManagedBy=gitlab
       fi
-
     - echo "Deploy complete — ${LAMBDA_NAME}"
 
 deploy:gateway-ingestion:
-  <<: *deploy_template
-  needs:
-    - package:gateway-ingestion
+  extends: .lambda_deploy_template
   script:
     - LAMBDA_NAME=agentcore-gateway-ingestion
-    - ZIP_PATH=lambdas/${LAMBDA_NAME}/${LAMBDA_NAME}.zip
+    - ZIP_PATH=/tmp/${LAMBDA_NAME}.zip
+    - cd lambdas/${LAMBDA_NAME} && zip -j ${ZIP_PATH} lambda_function.py && cd -
     - echo "Deploying ${LAMBDA_NAME}..."
-
     - |
       if aws lambda get-function --function-name ${LAMBDA_NAME} --region ${AWS_DEFAULT_REGION} 2>/dev/null; then
-        echo "Updating existing function..."
         aws lambda update-function-code \
           --function-name ${LAMBDA_NAME} \
           --zip-file fileb://${ZIP_PATH} \
@@ -155,7 +203,6 @@ deploy:gateway-ingestion:
           --environment "Variables={REGISTRY_ID=${REGISTRY_ID}}" \
           --region ${AWS_DEFAULT_REGION}
       else
-        echo "Creating new function..."
         aws lambda create-function \
           --function-name ${LAMBDA_NAME} \
           --runtime python3.12 \
@@ -170,21 +217,17 @@ deploy:gateway-ingestion:
           --region ${AWS_DEFAULT_REGION} \
           --tags Project=syngenta-agentcore-poc,ManagedBy=gitlab
       fi
-
     - echo "Deploy complete — ${LAMBDA_NAME}"
 
 deploy:catalog-api:
-  <<: *deploy_template
-  needs:
-    - package:catalog-api
+  extends: .lambda_deploy_template
   script:
     - LAMBDA_NAME=agentcore-catalog-api
-    - ZIP_PATH=lambdas/${LAMBDA_NAME}/${LAMBDA_NAME}.zip
+    - ZIP_PATH=/tmp/${LAMBDA_NAME}.zip
+    - cd lambdas/${LAMBDA_NAME} && zip -j ${ZIP_PATH} lambda_function.py && cd -
     - echo "Deploying ${LAMBDA_NAME}..."
-
     - |
       if aws lambda get-function --function-name ${LAMBDA_NAME} --region ${AWS_DEFAULT_REGION} 2>/dev/null; then
-        echo "Updating existing function..."
         aws lambda update-function-code \
           --function-name ${LAMBDA_NAME} \
           --zip-file fileb://${ZIP_PATH} \
@@ -200,7 +243,6 @@ deploy:catalog-api:
           --environment "Variables={REGISTRY_ID=${REGISTRY_ID}}" \
           --region ${AWS_DEFAULT_REGION}
       else
-        echo "Creating new function..."
         aws lambda create-function \
           --function-name ${LAMBDA_NAME} \
           --runtime python3.12 \
@@ -215,26 +257,17 @@ deploy:catalog-api:
           --region ${AWS_DEFAULT_REGION} \
           --tags Project=syngenta-agentcore-poc,ManagedBy=gitlab
       fi
-
     - echo "Deploy complete — ${LAMBDA_NAME}"
 
-package:authorizer:
-  <<: *package_template
-  variables:
-    LAMBDA_NAME: authorizer
-
 deploy:authorizer:
-  <<: *deploy_template
-  needs:
-    - package:authorizer
+  extends: .lambda_deploy_template
   script:
     - LAMBDA_NAME=agentcore-cognito-authorizer
-    - ZIP_PATH=lambdas/authorizer/authorizer.zip
+    - ZIP_PATH=/tmp/authorizer.zip
+    - cd lambdas/authorizer && zip -j ${ZIP_PATH} lambda_function.py && cd -
     - echo "Deploying ${LAMBDA_NAME}..."
-
     - |
       if aws lambda get-function --function-name ${LAMBDA_NAME} --region ${AWS_DEFAULT_REGION} 2>/dev/null; then
-        echo "Updating existing function..."
         aws lambda update-function-code \
           --function-name ${LAMBDA_NAME} \
           --zip-file fileb://${ZIP_PATH} \
@@ -250,7 +283,6 @@ deploy:authorizer:
           --environment "Variables={COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID},COGNITO_APP_CLIENT_ID=${COGNITO_APP_CLIENT_ID},COGNITO_REGION=${COGNITO_REGION}}" \
           --region ${AWS_DEFAULT_REGION}
       else
-        echo "Creating new function..."
         aws lambda create-function \
           --function-name ${LAMBDA_NAME} \
           --runtime python3.12 \
@@ -265,5 +297,4 @@ deploy:authorizer:
           --region ${AWS_DEFAULT_REGION} \
           --tags Project=syngenta-agentcore-poc,ManagedBy=gitlab
       fi
-
     - echo "Deploy complete — ${LAMBDA_NAME}"
