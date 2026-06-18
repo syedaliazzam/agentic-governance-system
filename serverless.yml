@@ -101,4 +101,3 @@ functions:
       patterns:
         - '!./**'
         - lambdas/authorizer/**
-    vpc: ~
