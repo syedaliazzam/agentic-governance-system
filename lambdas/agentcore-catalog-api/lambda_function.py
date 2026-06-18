@@ -213,7 +213,11 @@ def handler(event, context):
     path      = "/" + "/".join(parts)
     record_id = parts[1] if len(parts) >= 2 else None
 
-    print("REQUEST: " + method + " " + path)
+    # Extract persona from Lambda authorizer context
+    authorizer_ctx = event.get("requestContext", {}).get("authorizer", {}).get("lambda", {})
+    persona = authorizer_ctx.get("group", "consumers")  # default to most restrictive
+    sub     = authorizer_ctx.get("sub", "unknown")
+    print("REQUEST: " + method + " " + path + " | persona=" + persona + " sub=" + sub)
 
     # ── GET /records ─────────────────────────────────────────────────────────
     if method == "GET" and path.rstrip("/") == "/records":
@@ -233,10 +237,23 @@ def handler(event, context):
                 if d:
                     records.append(normalize(d))
 
+            # Enforce persona-based status visibility regardless of what
+            # the frontend sends — the authorizer context is the source of truth.
+            PERSONA_ALLOWED_STATUSES = {
+                "consumers":  {"APPROVED"},
+                "publishers": {"DRAFT", "REJECTED", "PENDING_APPROVAL", "APPROVED"},
+                "admins":     {"DRAFT", "REJECTED", "PENDING_APPROVAL", "APPROVED", "DEPRECATED"},
+            }
+            allowed = PERSONA_ALLOWED_STATUSES.get(persona, {"APPROVED"})
+
             if params.get("status"):
-                # Support comma-separated values e.g. ?status=DRAFT,REJECTED
-                statuses = [s.strip() for s in params["status"].split(",")]
-                records  = [r for r in records if r["status"] in statuses]
+                # Intersect requested statuses with what this persona is allowed to see
+                requested = {s.strip() for s in params["status"].split(",")}
+                statuses  = allowed & requested
+            else:
+                statuses = allowed
+
+            records = [r for r in records if r["status"] in statuses]
             if params.get("type"):
                 # Support comma-separated values e.g. ?type=A2A,CUSTOM
                 types   = [t.strip() for t in params["type"].split(",")]
