@@ -32,6 +32,7 @@ lint:
     - pyflakes lambdas/agentcore-registry-ingestion/lambda_function.py
     - pyflakes lambdas/agentcore-gateway-ingestion/lambda_function.py
     - pyflakes lambdas/agentcore-catalog-api/lambda_function.py
+    - pyflakes lambdas/authorizer/lambda_function.py
     - echo "Lint passed"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -211,6 +212,56 @@ deploy:catalog-api:
           --layers ${BOTO3_LAYER_ARN} \
           --environment "Variables={REGISTRY_ID=${REGISTRY_ID}}" \
           --description "AgentCore Catalog and Governance API" \
+          --region ${AWS_DEFAULT_REGION} \
+          --tags Project=syngenta-agentcore-poc,ManagedBy=gitlab
+      fi
+
+    - echo "Deploy complete — ${LAMBDA_NAME}"
+
+package:authorizer:
+  <<: *package_template
+  variables:
+    LAMBDA_NAME: authorizer
+
+deploy:authorizer:
+  <<: *deploy_template
+  needs:
+    - package:authorizer
+  script:
+    - LAMBDA_NAME=agentcore-cognito-authorizer
+    - ZIP_PATH=lambdas/authorizer/authorizer.zip
+    - echo "Deploying ${LAMBDA_NAME}..."
+
+    - |
+      if aws lambda get-function --function-name ${LAMBDA_NAME} --region ${AWS_DEFAULT_REGION} 2>/dev/null; then
+        echo "Updating existing function..."
+        aws lambda update-function-code \
+          --function-name ${LAMBDA_NAME} \
+          --zip-file fileb://${ZIP_PATH} \
+          --region ${AWS_DEFAULT_REGION}
+        aws lambda wait function-updated \
+          --function-name ${LAMBDA_NAME} \
+          --region ${AWS_DEFAULT_REGION}
+        aws lambda update-function-configuration \
+          --function-name ${LAMBDA_NAME} \
+          --timeout 10 \
+          --memory-size 256 \
+          --layers ${JOSE_LAYER_ARN} \
+          --environment "Variables={COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID},COGNITO_APP_CLIENT_ID=${COGNITO_APP_CLIENT_ID},COGNITO_REGION=${COGNITO_REGION}}" \
+          --region ${AWS_DEFAULT_REGION}
+      else
+        echo "Creating new function..."
+        aws lambda create-function \
+          --function-name ${LAMBDA_NAME} \
+          --runtime python3.12 \
+          --role ${AUTHORIZER_ROLE_ARN} \
+          --handler lambda_function.handler \
+          --zip-file fileb://${ZIP_PATH} \
+          --timeout 10 \
+          --memory-size 256 \
+          --layers ${JOSE_LAYER_ARN} \
+          --environment "Variables={COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID},COGNITO_APP_CLIENT_ID=${COGNITO_APP_CLIENT_ID},COGNITO_REGION=${COGNITO_REGION}}" \
+          --description "Cognito JWT Lambda authorizer for AgentCore Registry API Gateway" \
           --region ${AWS_DEFAULT_REGION} \
           --tags Project=syngenta-agentcore-poc,ManagedBy=gitlab
       fi

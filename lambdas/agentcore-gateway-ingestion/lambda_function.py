@@ -119,7 +119,7 @@ def lambda_handler(event, context):
             detail = control.get_gateway(gatewayIdentifier=gw_id)
             detail.pop("ResponseMetadata", None)
         except Exception as e:
-            print("  GetGateway denied for " + name + " — using list data only")
+            print("Error: " + str(e))
 
         # Fetch targets — empty list if access denied
         targets = []
