@@ -6,10 +6,6 @@ provider:
   stage: ${opt:stage, 'dev'}
   httpApi:
     id: ${env:HTTP_API_ID}
-    authorizers:
-      cognitoAuthorizer:
-        type: request
-        functionName: authorizer
   iam:
     role: !Ref AWS::NoValue
   layers:
@@ -49,28 +45,18 @@ functions:
       - httpApi:
           path: /records
           method: GET
-          authorizer:
-            name: cognitoAuthorizer
       - httpApi:
           path: /records/{id}
           method: GET
-          authorizer:
-            name: cognitoAuthorizer
       - httpApi:
           path: /records/{id}
           method: PUT
-          authorizer:
-            name: cognitoAuthorizer
       - httpApi:
           path: /records/{id}/submit
           method: POST
-          authorizer:
-            name: cognitoAuthorizer
       - httpApi:
           path: /records/{id}/status
           method: PUT
-          authorizer:
-            name: cognitoAuthorizer
   registry-ingestion:
     name: ai-foundry-registry-${opt:stage, 'dev'}-registry-ingestion-lambda
     handler: lambdas/agentcore-registry-ingestion/lambda_function.lambda_handler
