@@ -75,6 +75,8 @@ lint:python-lambdas:
     - echo "Packaging and deploying to AWS..."
     - set -a && source .env.${CI_ENVIRONMENT_NAME} && set +a
     - serverless deploy --stage $CI_ENVIRONMENT_NAME
+    - export STAGE=$CI_ENVIRONMENT_NAME
+    - ./scripts/attach-authorizer.sh
 
 deploy_dev:
   extends: .deploy_template
