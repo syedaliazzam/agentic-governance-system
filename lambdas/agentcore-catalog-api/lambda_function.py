@@ -286,8 +286,11 @@ def handler(event, context):
         d, e = get_record(record_id)
         if e:
             return err(404, e)
-        if d["status"] not in ("DRAFT", "REJECTED"):
-            return err(409, "Only DRAFT or REJECTED records can be updated. Current status: " + d["status"])
+        if d["status"] == "PENDING_APPROVAL":
+            if persona != "admins":
+                return err(403, "Only admins can edit records that are PENDING_APPROVAL.")
+        elif d["status"] not in ("DRAFT", "REJECTED"):
+            return err(409, "Only DRAFT, REJECTED, or PENDING_APPROVAL (admins only) records can be updated. Current status: " + d["status"])
 
         new_desc = body.get("description")
         new_tags = body.get("tags")
