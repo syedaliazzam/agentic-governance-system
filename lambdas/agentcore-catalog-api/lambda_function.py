@@ -286,8 +286,8 @@ def handler(event, context):
         d, e = get_record(record_id)
         if e:
             return err(404, e)
-        if d["status"] not in ("DRAFT",):
-            return err(409, "Only DRAFT records can be updated. Current status: " + d["status"])
+        if d["status"] not in ("DRAFT", "REJECTED"):
+            return err(409, "Only DRAFT or REJECTED records can be updated. Current status: " + d["status"])
 
         new_desc = body.get("description")
         new_tags = body.get("tags")
@@ -317,8 +317,8 @@ def handler(event, context):
             d, e = wait_for_stable(record_id)
             if e:
                 return err(500, e)
-        if d["status"] != "DRAFT":
-            return err(409, "Only DRAFT records can be submitted. Current status: " + d["status"])
+        if d["status"] not in ("DRAFT", "REJECTED"):
+            return err(409, "Only DRAFT or REJECTED records can be submitted. Current status: " + d["status"])
         try:
             registry.submit_registry_record_for_approval(
                 registryId=REGISTRY_ID, recordId=record_id)
