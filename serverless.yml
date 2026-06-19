@@ -91,6 +91,7 @@ functions:
     timeout: 10
     memorySize: 256
     role: ${env:AUTHORIZER_ROLE_ARN}
+    vpc: ~
     layers:
       - ${env:JOSE_LAYER_ARN}
     environment:
