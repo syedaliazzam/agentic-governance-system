@@ -1,0 +1,104 @@
+service: ai-foundry-registry
+provider:
+  name: aws
+  runtime: python3.12
+  region: ${env:AWS_REGION}
+  stage: ${opt:stage, 'dev'}
+  httpApi:
+    id: ${env:HTTP_API_ID}
+  iam:
+    role: !Ref AWS::NoValue
+  layers:
+    - ${env:BOTO3_LAYER_ARN}
+  environment:
+    REGISTRY_ID: ${env:REGISTRY_ID}
+  vpc:
+    securityGroupIds:
+      - ${env:LAMBDA_SG_ID1}
+    subnetIds:
+      - ${env:LAMBDA_SUBNET_ID1}
+      - ${env:LAMBDA_SUBNET_ID2}
+      - ${env:LAMBDA_SUBNET_ID3}
+  stackTags:
+    BusinessFunction: "EDO"
+    Platform: "AI-Foundry"
+    CostCenter: "CC-4454"
+    OwnerEmail: "Shrisom.Laha@syngenta.com"
+    ContactEmail: "Shrisom.Laha@syngenta.com"
+    CreatedByEmail: "harsh.verma@syngenta.com"
+    IACFramework: "Serverless"
+    aws-apn-id: "pc:3e3em1rpal9cc1zfvhmcg04x1"
+package:
+  individually: true
+functions:
+  catalog-api:
+    name: ai-foundry-registry-${opt:stage, 'dev'}-catalog-api-lambda
+    handler: lambdas/agentcore-catalog-api/lambda_function.handler
+    timeout: 30
+    memorySize: 256
+    role: ${env:CATALOG_ROLE_ARN}
+    package:
+      patterns:
+        - '!./**'
+        - lambdas/agentcore-catalog-api/**
+    events:
+      - httpApi:
+          path: /records
+          method: GET
+      - httpApi:
+          path: /records/{id}
+          method: GET
+      - httpApi:
+          path: /records/{id}
+          method: PUT
+      - httpApi:
+          path: /records/{id}/submit
+          method: POST
+      - httpApi:
+          path: /records/{id}/status
+          method: PUT
+  registry-ingestion:
+    name: ai-foundry-registry-${opt:stage, 'dev'}-registry-ingestion-lambda
+    handler: lambdas/agentcore-registry-ingestion/lambda_function.lambda_handler
+    timeout: 300
+    memorySize: 256
+    role: ${env:LAMBDA_ROLE_ARN}
+    package:
+      patterns:
+        - '!./**'
+        - lambdas/agentcore-registry-ingestion/**
+    events:
+      - httpApi:
+          path: /ingest/registry
+          method: POST
+  gateway-ingestion:
+    name: ai-foundry-registry-${opt:stage, 'dev'}-gateway-ingestion-lambda
+    handler: lambdas/agentcore-gateway-ingestion/lambda_function.lambda_handler
+    timeout: 120
+    memorySize: 256
+    role: ${env:LAMBDA_ROLE_ARN}
+    package:
+      patterns:
+        - '!./**'
+        - lambdas/agentcore-gateway-ingestion/**
+    events:
+      - httpApi:
+          path: /ingest/gateways
+          method: POST
+  authorizer:
+    name: ai-foundry-registry-${opt:stage, 'dev'}-authorizer-lambda
+    handler: lambdas/authorizer/lambda_function.handler
+    timeout: 10
+    memorySize: 256
+    role: ${env:AUTHORIZER_ROLE_ARN}
+    vpc: ~
+    layers:
+      - ${env:JOSE_LAYER_ARN}
+    environment:
+      COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID}
+      COGNITO_APP_CLIENT_ID: ${env:COGNITO_APP_CLIENT_ID}
+      COGNITO_REGION: ${env:COGNITO_REGION}
+    package:
+      patterns:
+        - '!./**'
+        - lambdas/authorizer/**

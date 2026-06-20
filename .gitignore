@@ -1,3 +1,4 @@
-node_modules/
-dist/
-*.zip
+
+__pycache__/
+*.pyc
+*.pyo

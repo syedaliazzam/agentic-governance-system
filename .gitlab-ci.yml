@@ -1,0 +1,99 @@
+workflow:
+  rules:
+    - if: "$CI_COMMIT_TAG"
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/.+$/'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+image: node:20-slim
+
+variables:
+  AWS_REGION: "eu-central-1"
+  AWS_DEFAULT_REGION: "eu-central-1"
+  GIT_DEPTH: "0"
+  AWS_ROLE_ARN_DEV: "arn:aws:iam::978502151212:role/GalaxyAI-TerraformRole"
+  AWS_ROLE_ARN_PROD: ""
+
+stages:
+  - validate
+  - deploy
+
+.install_aws_cli_serverless:
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+  before_script:
+    - apt-get update && apt-get install -y curl unzip
+    - curl -L "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "aws-cli.zip"
+    - unzip aws-cli.zip && ./aws/install
+    - npm install -g serverless@3 && serverless --version
+    - >
+      export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s"
+      $(aws sts assume-role-with-web-identity
+      --role-arn ${AWS_ROLE_ARN}
+      --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+      --web-identity-token ${GITLAB_OIDC_TOKEN}
+      --duration-seconds 3600
+      --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'
+      --output text))
+    - aws sts get-caller-identity
+
+validate:
+  stage: validate
+  script:
+    - echo "Validation passed — add unit tests here"
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/.+$/'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+lint:python-lambdas:
+  stage: validate
+  image: python:3.12-slim
+  script:
+    - pip install pyflakes --quiet
+    - pyflakes lambdas/agentcore-registry-ingestion/lambda_function.py
+    - pyflakes lambdas/agentcore-gateway-ingestion/lambda_function.py
+    - pyflakes lambdas/agentcore-catalog-api/lambda_function.py
+    - pyflakes lambdas/authorizer/lambda_function.py
+    - echo "Lambda lint passed"
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/.+$/'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+.deploy_template:
+  extends: .install_aws_cli_serverless
+  stage: deploy
+  script:
+    - STACK_NAME="AI-Foundry-Registry-${CI_ENVIRONMENT_NAME}"
+    - STATUS=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].StackStatus" --output text || echo "NOT_FOUND")
+    - >
+      if [ "$STATUS" = "ROLLBACK_COMPLETE" ]; then
+        echo "Stack in ROLLBACK_COMPLETE state. Deleting..."
+        aws cloudformation delete-stack --stack-name $STACK_NAME
+        echo "Waiting for stack deletion..."
+        aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME
+      fi
+    - echo "Packaging and deploying to AWS..."
+    - set -a && source .env.${CI_ENVIRONMENT_NAME} && set +a
+    - serverless deploy --stage $CI_ENVIRONMENT_NAME
+    - export STAGE=$CI_ENVIRONMENT_NAME
+    - ./scripts/attach-authorizer.sh
+
+deploy_dev:
+  extends: .deploy_template
+  environment:
+    name: dev
+  variables:
+    AWS_ROLE_ARN: $AWS_ROLE_ARN_DEV
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^dev\/v.+$/'
+      when: manual
+
+deploy_prod:
+  extends: .deploy_template
+  environment:
+    name: prod
+  variables:
+    AWS_ROLE_ARN: $AWS_ROLE_ARN_PROD
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^release\/v.+$/'
+      when: manual
