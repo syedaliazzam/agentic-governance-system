@@ -45,7 +45,7 @@ aws logs tail /aws/lambda/agentcore-registry-ingestion \
 Scans all AgentCore Gateways in `eu-central-1` and ingests them into the registry. Tries MCP descriptor first; falls back to CUSTOM for JWT-protected gateways.
 
 - **Invocation:** sync (`InvocationType=RequestResponse`) — takes ~10s
-- **Timeout:** 120sec | **Memory:** 256 MB
+- **Timeout:** 120s | **Memory:** 256 MB
 - **IAM Role:** `agentcore-registry-migration-role`
 
 ```bash
